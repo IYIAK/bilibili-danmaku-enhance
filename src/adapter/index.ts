@@ -1,0 +1,12 @@
+import './_iframe_player_parser'
+
+import './agefans'
+import './bimiacg'
+import './cycanime'
+import './xfani'
+import './standalone'
+import './anime1'
+import './gugufan'
+import './girigirilove'
+import './tucao'
+import './bilibili'

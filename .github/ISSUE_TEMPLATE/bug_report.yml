@@ -1,0 +1,27 @@
+name: Bug 报告
+description: 出现什么问题了快提交给我吧，以便改进脚本体验
+labels: [bug]
+body:
+  - type: input
+    id: url
+    attributes:
+      label: Bug 网页链接
+      description: 哪个页面出现的 Bug，把链接填写下
+      placeholder: 请填写网页链接
+    validations:
+      required: true
+  - type: input
+    id: browser
+    attributes:
+      label: 浏览器信息
+      placeholder: 使用的浏览器的名称和版本，如果知道 UserAgent 信息就更好了
+      description: 可在 https://tool.chinaz.com/useragent/ 中查看当前的UserAgent
+    validations:
+      required: false
+  - type: textarea
+    id: desc
+    attributes:
+      label: 简要描述下问题
+      description: 你可以使用【?】键打开【脚本信息】使用【报错意见】中的【GitHub Issues】提交问题，这样可以带上更多有效的信息
+    validations:
+      required: false
