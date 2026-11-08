@@ -81,14 +81,14 @@ function layout({ title, description, page, body }) {
       <span>${esc(SITE.name)}</span>
       <small>v${esc(SITE.version)}</small>
     </a>
-    <nav class="site-nav">${nav}<a class="gh-link" href="${SITE.repo}" rel="noopener" aria-label="GitHub 仓库" title="GitHub 仓库">${ICONS.github}</a></nav>
+    <nav class="site-nav">${nav}<a class="gh-link" href="${SITE.repo}" target="_blank" rel="noopener" aria-label="GitHub 仓库" title="GitHub 仓库">${ICONS.github}</a></nav>
   </div>
 </header>
 ${body}
 <footer class="site-footer">
   <div class="wrap">
     <span>${esc(SITE.name)} · 把第三方弹幕并入哔哩哔哩原生弹幕流</span>
-    <span><a href="${SITE.repo}" rel="noopener">GitHub 仓库</a></span>
+    <span><a href="${SITE.repo}" target="_blank" rel="noopener">GitHub 仓库</a></span>
   </div>
 </footer>
 </body>
@@ -159,11 +159,28 @@ function homePage() {
     },
   ]
 
+  // desc 允许内嵌 HTML（超链接、<kbd> 等），渲染时不转义
   const steps = [
-    { title: '安装脚本', desc: '安装 Tampermonkey 后，将 index.user.js 拖入或粘贴安装。' },
-    { title: '启用注入', desc: '打开哔哩哔哩任意视频，点击控制条右侧的弹幕图标，开启「启用注入」。' },
-    { title: '确认匹配', desc: '面板按标题自动匹配番剧；结果有误时可手动检索，或直接粘贴视频链接。' },
-    { title: '调整细节', desc: '时间轴不符时填写偏移量；弹幕过密可使用过滤器。设置按 cid 记忆。' },
+    {
+      title: '安装 Tampermonkey',
+      desc: `先在浏览器安装 <a href="https://www.tampermonkey.net/" target="_blank" rel="noopener">Tampermonkey</a>（Violentmonkey 亦可）。已装过可跳到下一步。`,
+    },
+    {
+      title: '安装脚本',
+      desc: `点击页首的「安装脚本」按钮，浏览器会自动唤起油猴的安装页，确认即可。`,
+    },
+    {
+      title: '启用注入',
+      desc: '打开哔哩哔哩任意视频，点击控制条右侧的弹幕图标，开启「启用注入」。',
+    },
+    {
+      title: '确认匹配',
+      desc: '面板按标题自动匹配番剧；结果有误时可手动检索，或直接粘贴视频链接。',
+    },
+    {
+      title: '调整细节',
+      desc: '时间轴不符时填写偏移量；弹幕过密可使用过滤器。设置按 cid 记忆。',
+    },
   ]
 
   const faqs = [
@@ -265,14 +282,14 @@ function homePage() {
     <div class="wrap">
       <div class="section-head">
         <h2>使用方法</h2>
-        <p>共四步，约需两分钟。</p>
+        <p>共五步，首次安装约需两分钟。</p>
       </div>
       <div class="steps">
         ${steps
           .map(
             (s) => `<div class="step">
           <h3>${esc(s.title)}</h3>
-          <p>${esc(s.desc)}</p>
+          <p>${s.desc}</p>
         </div>`
           )
           .join('\n        ')}
@@ -416,19 +433,16 @@ async function main() {
       problems.push(`${name}: 样式没有注入`)
     }
 
-    // 3. 首屏零外链：只允许 data: 和纯相对路径
+    // 3. 首屏零外链：不得加载任何外部资源
+    //    区分两类：src / @import / url() 是浏览器会主动抓取的资源，必须为零；
+    //    <a href> 只是给人点的导航链接，不影响「零外部依赖」这项承诺。
     const external = [
-      ...html.matchAll(/(?:src|href)\s*=\s*"([^"]+)"/g),
+      ...html.matchAll(/\bsrc\s*=\s*"([^"]+)"/g),
       ...html.matchAll(/@import\s+url\(["']?([^"')]+)/g),
       ...html.matchAll(/url\(\s*["']?(https?:\/\/[^"')]+)/g),
     ]
       .map((m) => m[1])
-      .filter(
-        (url) =>
-          /^https?:\/\//i.test(url) &&
-          // 页脚那个 GitHub 链接是给人点的超链接，不是资源加载，允许
-          !url.startsWith(SITE.repo)
-      )
+      .filter((url) => /^https?:\/\//i.test(url))
     if (external.length) {
       problems.push(`${name}: 存在外部资源请求 ${external.join(', ')}`)
     }
