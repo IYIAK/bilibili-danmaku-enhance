@@ -2,6 +2,16 @@
 
 > 把弹弹play、哔哩哔哩 URL 源与巴哈姆特动画疯的弹幕，合并进哔哩哔哩原生弹幕流。
 
+<p align="center">
+  <a href="https://github.com/IYIAK/bilibili-danmaku-enhance/raw/gh-pages/index.user.js">
+    <img alt="安装脚本" src="https://img.shields.io/badge/%E5%AE%89%E8%A3%85%E8%84%9A%E6%9C%AC-%E4%B8%80%E9%94%AE%E5%AE%89%E8%A3%85-1f883d?style=for-the-badge&logo=tampermonkey&logoColor=white">
+  </a>
+</p>
+
+<p align="center">
+  需先安装 <a href="https://www.tampermonkey.net/">Tampermonkey</a> 或 Violentmonkey；点开后浏览器会唤起油猴的安装页
+</p>
+
 弹幕存于弹弹play，播放器习惯用哔哩哔哩。本项目将两者结合：**不替换播放器**、不安装额外插件、
 不修改哔哩哔哩的任何设置，开启开关后，当前视频的弹幕流中即包含第三方弹幕。
 
@@ -95,10 +105,18 @@ GET api.bilibili.com/x/v2/dm/web/seg.so?type=1&oid=<cid>&segment_index=<n>
 
 ## 安装
 
-1. 安装 [Tampermonkey](https://www.tampermonkey.net/)（Violentmonkey 亦可）
-2. 安装脚本：[index.user.js](https://github.com/IYIAK/bilibili-danmaku-enhance/raw/gh-pages/index.user.js)
+**第一步**｜在浏览器安装 [Tampermonkey](https://www.tampermonkey.net/)（Violentmonkey 亦可）。装过可跳过。
 
-推送 `master` 后由 GitHub Actions 自动构建并发布至 `gh-pages` 分支，上述地址始终为最新构建。
+**第二步**｜点下面的按钮安装脚本：
+
+<p align="center">
+  <a href="https://github.com/IYIAK/bilibili-danmaku-enhance/raw/gh-pages/index.user.js">
+    <img alt="安装 Danmaku Enhance" src="https://img.shields.io/badge/%E5%AE%89%E8%A3%85-Danmaku%20Enhance-1f883d?style=for-the-badge&logo=tampermonkey&logoColor=white">
+  </a>
+</p>
+
+浏览器会唤起油猴的安装页，确认即可。推送 `master` 后由 GitHub Actions 自动构建并发布至
+`gh-pages` 分支，上述地址始终为最新构建，脚本也会据此地址自动检查更新。
 
 ## 使用方法
 
