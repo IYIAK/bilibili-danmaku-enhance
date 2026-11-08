@@ -22,7 +22,7 @@ const SRC = join(here, 'src')
 const SITE = {
   name: 'Danmaku Enhance',
   tagline: '让哔哩哔哩的弹幕，多几个来源',
-  repo: 'https://github.com/IYIAK/danmaku-enhance',
+  repo: 'https://github.com/IYIAK/bilibili-danmaku-enhance',
   script: './index.user.js',
   version: RELEASES[0].version,
 }
