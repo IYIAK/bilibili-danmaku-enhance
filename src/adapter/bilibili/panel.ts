@@ -29,6 +29,7 @@ import {
   setExpecting,
   setHold,
   setLoading,
+  traceEvent,
 } from './hook'
 import {
   MatchError,
@@ -1274,6 +1275,27 @@ export function mountPanel(info: BiliPageInfo): PanelHandle {
       action: { label: '刷新', onClick: () => location.reload() },
     })
   }
+
+  /**
+   * 播放器手里那一段是否真的缺了刚加载的弹幕。
+   *
+   * 不能用 `requests > 0` 判断：那只说明播放器**发出过**弹幕请求，
+   * 不代表它**拿到过**响应。白名单页面会把请求扣住（`stats.held`），
+   * 播放器一直拿不到数据，也就不存在任何缓存——放行后照样会走合并
+   * 流程，弹幕正常注入，提示刷新就是虚警。
+   *
+   * 真正需要刷新只有两种：
+   * 1. `segments > 0`：已经注入过分段，播放器手里那一段是按**旧候选**
+   *    合并的，后来才加进来的 URL 弹幕不在里面；
+   * 2. `missed > 0`：有分段在我们拿到候选之前就被取走，播放器不会重发。
+   *
+   * 判断发生在 `releaseHold()` 之前，所以被扣住的页面此时 `segments`
+   * 仍是 0，能与「已匹配完成后再加来源」那种真缓存区分开。
+   */
+  function segmentNeedsRefresh() {
+    const stats = getStats()
+    return stats.segments > 0 || stats.missed > 0
+  }
   // 匹配序号：每重置一次就 +1，异步链路在每个 await 之后核对。
   // 换视频/换集时上一轮的网络请求可能晚一步才回来，不拦住它就会把
   // 上一个视频的番名、集数、弹幕写进新页面——表现就是「换了视频还是
@@ -1344,7 +1366,8 @@ export function mountPanel(info: BiliPageInfo): PanelHandle {
   }
 
   /** 「详情」里展开的技术细节 */
-  function debugLine(stats: ReturnType<typeof getStats>) {    const parts = [
+  function debugLine(stats: ReturnType<typeof getStats>) {
+    const parts = [
       `请求 ${stats.requests}`,
       `开闸 ${stats.armed}`,
       `接管 ${stats.reads}`,
@@ -1357,6 +1380,11 @@ export function mountPanel(info: BiliPageInfo): PanelHandle {
       `段 ${stats.lastSeg ?? '-'}／合至 ${stats.lastMergedSeg ?? '-'}`,
     ]
     let line = parts.join(' · ')
+    // 把「要不要提示刷新」的真实判据摆出来，方便对照面板上的提示是否合理
+    line +=
+      `\n判据：注入过分段=${stats.segments > 0} 错过=${stats.missed > 0}` +
+      ` → 需刷新=${stats.segments > 0 || stats.missed > 0}` +
+      `（扣住=${stats.held > 0} 请求过=${stats.requests > 0}，均不参与判断）`
     if (stats.lastDetail) line += `\n${stats.lastDetail}`
     if (stats.lastState) line += `\n${stats.lastState}`
     if (stats.hook && stats.hook !== 'ok') line += `\nhook：${stats.hook}`
@@ -1385,10 +1413,19 @@ export function mountPanel(info: BiliPageInfo): PanelHandle {
     }
     if (urlFallbackCount > 0 && notice) {
       statusMain.textContent = notice
-      statusSub.textContent = urlFallbackNeedsRefresh
-        ? '当前分段可能已缓存，刷新后生效'
-        : '后续分段会自动生效'
-      pageReloadBtn.hidden = !urlFallbackNeedsRefresh
+      const total = availableTotal()
+      if (urlFallbackNeedsRefresh) {
+        statusSub.textContent = total
+          ? `共 ${total} 条，当前分段可能已缓存，刷新后生效`
+          : '当前分段可能已缓存，刷新后生效'
+        pageReloadBtn.hidden = false
+      } else {
+        // 与普通情况统一句式：即便当前段命中 0 条也照实写「已注入 0 条」，
+        // 比「后续分段会自动生效」更明确——用户能看出数据是有的，
+        // 只是这一段没赶上，而不是「哪儿出了错」。
+        statusSub.textContent = `共 ${total} 条，当前分段已注入 ${stats.injected} 条`
+        pageReloadBtn.hidden = true
+      }
       debugBox.textContent = debugLine(stats)
       return
     }
@@ -1438,8 +1475,7 @@ export function mountPanel(info: BiliPageInfo): PanelHandle {
             }`
           : `已注入 ${stats.injected} 条（${stats.segments} 段）${
               extra ? `（${extra}）` : ''
-            }`
-      } else if (stats.requests > 0 && stats.segments === 0 && stats.missed > 0) {
+            }`      } else if (stats.requests > 0 && stats.segments === 0 && stats.missed > 0) {
         // 有几段请求是在我们手上还没有候选弹幕的时候到的（匹配还没跑完，
         // 或者这一段在开关打开前就被取走了），播放器把它们缓存在内存里
         // 不会重发，只能刷新页面。
@@ -1467,7 +1503,12 @@ export function mountPanel(info: BiliPageInfo): PanelHandle {
       } else if (stats.reads === 0) {
         statusSub.textContent = withTotal('已拦截请求，但还没有接管到响应')
       } else {
-        statusSub.textContent = withTotal('已接管请求，当前分段没有可注入的弹幕')
+        // 与「已注入 N 条」保持同一句式：有总数就照实写「已注入 0 条」。
+        // 「当前分段没有可注入的弹幕」听起来像出错，实际只是这一段没命中。
+        const total = availableTotal()
+        statusSub.textContent = total
+          ? `共 ${total} 条，当前分段已注入 0 条`
+          : '已接管请求，当前分段已注入 0 条'
       }
       debugBox.textContent = debugLine(stats)
       return
@@ -1642,25 +1683,63 @@ export function mountPanel(info: BiliPageInfo): PanelHandle {
    * 因为「该集没有弹幕」保持暂停；URL源有数据后应按匹配成功处理，放行
    * 已扣留的响应、恢复播放，并让当前分段重新探测。
    */
+  /**
+   * URL 兜底这条路这次会不会真的接管。
+   *
+   * 只在「弹弹play 明确返回空集」时接管（comments 是空数组）；如果弹弹play
+   * 本身有弹幕，URL 弹幕是并进去的，不需要兜底。判定抽出来是为了让
+   * `onAddUrl` 能提前知道「兜底会不会替我弹条数 toast」，避免两条重复。
+   */
+  function canUrlFallback() {
+    if (detached || !config.enabled) return false
+    const comments = getComments()
+    const total = getTotalCount()
+    return !!comments && comments.length === 0 && total > 0
+  }
+
   function applyUrlFallback(): boolean {
     if (detached || !config.enabled) return false
     const comments = getComments()
     const total = getTotalCount()
     if (!comments || comments.length > 0 || total <= 0) return false
     if (total === urlFallbackCount) return true
-
     urlFallbackCount = total
-    urlFallbackNeedsRefresh = getStats().requests > 0
+    // 只有真的存在「播放器手里那段缺弹幕」时才提示刷新，见 segmentNeedsRefresh()。
+    // 注意：必须在下面 releaseHold() **之前**取值，否则被扣住的请求放行后会
+    // 立刻注入，segments 变成非 0，就分不清是虚警还是真缓存了。
+    const statsForJudge = getStats()
+    urlFallbackNeedsRefresh = segmentNeedsRefresh()
+    traceEvent(
+      `applyUrlFallback total=${total} segments=${statsForJudge.segments}` +
+        ` missed=${statsForJudge.missed} held=${statsForJudge.held}` +
+        ` → 需刷新=${urlFallbackNeedsRefresh}`
+    )
     busy = false
     matchSettled = true
-    notice = `URL来源已加载 ${total} 条弹幕`
+    // URL 兜底有两种来源，可以靠 `anime/episode` 区分：
+    // - 匹配成功但那部番的这一集没有弹幕（`pickEpisode` 走到「该集没有弹幕」）：
+    //   此时 anime/episode 都已确定，主文案应当与普通情况一致，用番名·集名，
+    //   让用户知道匹配是成功的，只是这集弹弹play 没有数据。
+    // - 匹配失败（压根没匹配上番剧/集数）：anime/episode 为空，主文案只能
+    //   告诉用户「URL 来源加载了多少条」。
+    // 两种情况的副文案都对齐普通情况：共 N 条，当前分段已注入 M 条。
+    notice = matchedAnime()
+      ? `${anime!.name} · ${episode!.name}`
+      : `URL来源已加载 ${total} 条弹幕`
     releaseHold()
     clearToast('hold')
     clearToast('hold-tip')
-    showToast(notice, { key: 'count', duration: 4000 })
+    // 匹配成功却没有弹弹play 弹幕时，「已加载 N 条」这条 toast 仍然有用：
+    // 状态行此刻显示的是番名，条数信息不能丢。
+    showToast(`URL来源已加载 ${total} 条弹幕`, { key: 'count', duration: 4000 })
     resumeIfWePaused()
     reloadDanmaku(announcedMatch !== null || getStats().missed > 0)
     return true
+  }
+
+  /** 是否已经确定「哪部番的哪一集」（匹配成功，只是可能没弹幕） */
+  function matchedAnime() {
+    return !!(anime && episode)
   }
 
   async function ensureMatch() {
@@ -1981,17 +2060,19 @@ export function mountPanel(info: BiliPageInfo): PanelHandle {
       const entry = await addSource(url)
       urlInput.value = ''
       // 播放器已经取过当前分段后再加入来源：后续分段会自动使用新来源，
-      // 但当前分段通常已经在播放器内存中，不能靠脚本重新触发请求。
+      // 但当前分段可能已经在播放器内存里，不能靠脚本重新触发请求。
       // 只对手动添加设置这个提示，页面初始化时恢复旧来源不应反复提示刷新。
+      //
+      // toast 由 applyUrlFallback() 统一负责（key='count'），这里只在
+      // 「弹弹play 已有弹幕、走不到兜底分支」时补一条——那种情况下
+      // applyUrlFallback 会因 comments.length > 0 直接返回，没人弹条数。
       if (entry.items.length > 0 && getStats().requests > 0) {
         urlSourceNotice = `URL来源已加载 ${entry.items.length} 条弹幕`
-        urlSourceNeedsRefresh = true
-        const total = availableTotal()
-        showToast(urlSourceNotice, { key: 'url-source-count', duration: 4000 })
-        showReloadToast(
-          total ? `共 ${total} 条，刷新页面后当前段生效` : '刷新页面后当前段生效',
-          'url-source-refresh'
-        )
+        urlSourceNeedsRefresh = segmentNeedsRefresh()
+        // 兜底分支会弹一次；它能接管时这里就不弹，避免两条一样的
+        if (!canUrlFallback()) {
+          showToast(urlSourceNotice, { key: 'url-source-count', duration: 4000 })
+        }
       }
       applyUrlFallback()
     } catch (error) {

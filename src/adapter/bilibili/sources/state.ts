@@ -8,6 +8,7 @@ import { loadSources, saveSources, storageSourceOffset } from '../store'
 import { findSource } from './index'
 import type { DanmakuItem, SourceEpisode, UrlSource } from './index'
 import { errorMessage } from '../error'
+import { traceEvent } from '../hook'
 
 export interface UrlSourceEntry {
   /** 唯一 id，用于删除/更新 */
@@ -51,6 +52,17 @@ export function subscribe(fn: () => void) {
 
 export function getEntries(): UrlSourceEntry[] {
   return entries
+}
+
+/**
+ * 当前页面是否存在任何 URL 来源（不论是否已加载完）。
+ *
+ * 用途：弹弹play 明确返回 0 条时，面板要 `setComments([])`。此时若还有
+ * URL 来源在拉取，分段请求值得继续扣住等它；完全没有来源才说明这一集
+ * 确实没有第三方弹幕，可以按「没匹配上」处理。
+ */
+export function hasAnyUrlSource(): boolean {
+  return entries.length > 0
 }
 
 /** 当前所有来源的弹幕，已应用各自的偏移 */
@@ -178,6 +190,7 @@ async function loadEntry(
     if (expectedGeneration !== pageGeneration || loadSeq.get(entry.key) !== mine) return
     entry.items = items
     entry.progress = items.length ? `共 ${items.length} 条` : '这一集没有弹幕'
+    traceEvent(`URL源就绪 items=${items.length}`)
   } catch (error) {
     if (expectedGeneration !== pageGeneration || loadSeq.get(entry.key) !== mine) return
     entry.items = []

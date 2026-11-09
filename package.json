@@ -1,6 +1,6 @@
 {
   "name": "bilibili-danmaku-enhance",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "把弹弹play、哔哩哔哩 URL 源与巴哈姆特动画疯的弹幕合并进哔哩哔哩原生播放器",
   "main": "index.user.js",
   "type": "module",

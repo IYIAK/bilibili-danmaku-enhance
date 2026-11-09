@@ -3,7 +3,7 @@ import { applyDensity, createBlockChecker, isSimilar, loadFilter } from './filte
 import type { FilterConfig, FilterTarget } from './filters'
 import { decodeReply, rebuildReply, replaceElemText } from './proto'
 import type { InjectElem } from './proto'
-import { collectItems } from './sources/state'
+import { collectItems, hasAnyUrlSource } from './sources/state'
 import { errorMessage } from './error'
 
 /**
@@ -184,6 +184,7 @@ export function setExpecting(expecting: boolean) {
  * 出结果，要么自己点播放——一点播放就 `releaseHold()`。
  */
 export function setHold(hold: boolean) {
+  traceEvent(`setHold(${hold})`)
   state.hold = hold
   // 进、出扣留模式都把「用户已经放弃等待」这个标志清掉：
   // - 退出时它没有意义了；
@@ -200,6 +201,7 @@ export function getHold() {
 
 /** 立刻放行所有扣住的响应（用户手动播放 / 主动放弃等待时调用） */
 export function releaseHold() {
+  traceEvent(`releaseHold（此前 holdReleased=${state.holdReleased}）`)
   state.holdReleased = true
   // 扣留一旦放行过，说明至少有一段响应已经按当时的候选合并并交给了播放器。
   // 之后重选集数时：新候选只对「之后到达的分段请求」生效，已经合并进
@@ -215,8 +217,60 @@ export function hasHoldEverReleased() {
   return holdEverReleased
 }
 
+/** 诊断用：记录关键事件的时序（只保留最近若干条） */
+const timeline: string[] = []
+export function traceEvent(msg: string) {
+  const t = performance.now()
+  timeline.push(`${t.toFixed(0)}ms ${msg}`)
+  if (timeline.length > 40) timeline.shift()
+}
+export function getTimeline() {
+  return [...timeline]
+}
+
 export function getStats(): HookStats {
   return { ...state.stats }
+}
+
+/**
+ * 诊断快照：给面板「详情」和浏览器控制台验证用。
+ *
+ * 只读，不改任何状态。设计目的是让「到底有没有缓存、扣留释放了没有、
+ * 这一段是错过还是正常注入」这些判断可以被直接观察，而不是靠推理。
+ *
+ * 用法：在页面控制台执行
+ *   window.__kdDebug()
+ */
+export function debugSnapshot() {
+  const stats = { ...state.stats }
+  return {
+    // 开关与页面
+    enabled: state.enabled,
+    dedupe: state.dedupe,
+    cid: state.cid ?? null,
+    // 扣留状态（白名单）
+    hold: state.hold,
+    holdReleased: state.holdReleased,
+    // 匹配状态
+    expecting: state.expecting,
+    loading: state.loading !== null,
+    commentsCount: state.comments ? state.comments.length : null,
+    // 计数
+    stats,
+    // 关键判断：下面这两个布尔值是「要不要提示刷新」的真实依据
+    judgement: {
+      /** 播放器发过请求没有（注意：不代表拿到过数据） */
+      everRequested: stats.requests > 0,
+      /** 有段落是在我们没准备好时被取走的（真正需要刷新） */
+      everMissed: stats.missed > 0,
+      /** 扣住了多少段（>0 说明放行后会重新走合并流程，不存在缓存） */
+      everHeld: stats.held > 0,
+      /** 到底有没有注入过带有第三方弹幕的分段 */
+      everInjected: stats.injected > 0,
+    },
+    /** 关键事件时序，用来判断「请求到达」与「候选就绪」谁先谁后 */
+    timeline: getTimeline(),
+  }
 }
 
 /** 切集/换页面时重置，保留开关状态 */
@@ -645,9 +699,18 @@ function buildInjections(
   // 合并要求按时间有序，两路来源各自有序但拼起来不一定
   candidates.sort((a, b) => a.timeMs - b.timeMs)
 
+  traceEvent(
+    `build seg=${request.index} comments=${fromComments.length} urls=${fromUrls.length}` +
+      ` 候选=${candidates.length} startMs=${Math.round(request.startMs)}` +
+      ` endMs=${Math.round(request.endMs)}`
+  )
+
   // 没有候选时只把当前播放窗口记为 missed。播放器打开弹幕列表时会预取
   // 其它分段，那些分段没有第三方弹幕并不代表当前播放段已经被缓存；如果
   // 也计入 missed，面板会误报「当前段已缓存，刷新生效」。
+  //
+  // missed 的语义 = 「这一段在我们拿到候选之前就被取走了，播放器不会再重发」。
+  // 它才是「需要刷新页面」的真实判据；`requests` 只表示请求发出过。
   const now = playbackMs()
   const ahead = now >= 0 && request.startMs > now + 30 * 1000
   const behind = now >= 0 && request.endMs < now - 60 * 1000
@@ -657,7 +720,12 @@ function buildInjections(
   state.stats.available = candidates.length
   // 这一帧一条候选都没有 = 这一段是在我们准备好之前就被取走的，
   // 播放器不会重发，只能刷新页面。面板据此提示「本段已缓存，刷新生效」。
-  if (!candidates.length && !ahead && !behind) state.stats.missed++
+  if (!candidates.length && !ahead && !behind) {
+    state.stats.missed++
+    traceEvent(`MISS seg=${request.index} now=${now} ahead=${ahead} behind=${behind}`)
+  } else if (!candidates.length) {
+    traceEvent(`skip-miss seg=${request.index} now=${now} ahead=${ahead} behind=${behind}`)
+  }
   const result = pickComments(candidates, request, bytes, loadFilter())
   if (result.filtered) state.stats.filtered += result.filtered
   if (result.merged) state.stats.merged += result.merged
@@ -1018,20 +1086,52 @@ function trackRequest(xhr: XHRWithContext, request: SegRequest) {
  *   上残留的请求把内存吊死。
  */
 async function waitForLoading() {
-  if (state.comments) return
+  // ⚠️ 这里不能写成 `if (state.comments) return`：弹弹play 明确返回 0 条时
+  // 面板会 `setComments([])`，而 **空数组在 JS 里是真值**，那一行会把
+  // 「这一集没有弹弹play弹幕」当成「弹幕已就绪」直接放行，白名单扣留被
+  // 整段绕过。此时的 URL 来源往往还没拉完，那一段就在没有任何第三方
+  // 弹幕的情况下被交给播放器，播放器按 cid 缓存后不会重发——表现为
+  // 「该集没有弹幕 + 手动加了 URL 源，首段仍丢，要刷新才生效」。
+  //
+  // 真正「有候选可用」的判据是 length > 0。空数组代表「弹弹play 这条路
+  // 已经走到头，但结果为空」，此时该继续扣住，等 URL 来源出结果。
+  const commentsReady = () => !!state.comments && state.comments.length > 0
+  if (commentsReady()) return
 
   const hold = state.hold
   if (hold) state.stats.held++
+  traceEvent(
+    `waitForLoading 进入 hold=${hold} released=${state.holdReleased}` +
+      ` expecting=${state.expecting} loading=${state.loading !== null}` +
+      ` comments=${state.comments ? state.comments.length : 'null'}`
+  )
   const deadline = Date.now() + LOAD_WAIT_MS
 
   while (true) {
-    if (state.comments) return
+    if (commentsReady()) {
+      traceEvent('waitForLoading 退出：comments 有候选')
+      return
+    }
 
     if (hold) {
       // 用户手动播放 / 主动放弃等待：立刻放行
-      if (state.holdReleased) return
+      if (state.holdReleased) {
+        traceEvent('waitForLoading 退出：holdReleased')
+        return
+      }
       // 页面已经不归白名单管了（换视频、换集、开关关掉），没有理由再扣
-      if (!state.hold) return
+      if (!state.hold) {
+        traceEvent('waitForLoading 退出：hold 已关闭')
+        return
+      }
+      // 这里**不要**因为「弹弹play 已确认该集没有弹幕」就 return。
+      // 白名单的语义是「匹配出结果之前一直扣住，只有用户点播放才放行」
+      // （见 settleForced → giveUpHold 里 `if (forced) return`）。
+      // 提前 return 会把这一段在「还没有任何候选」的状态下交给播放器，
+      // 播放器按 cid 缓存后不会重发——用户随后手动加 URL 源也追不回来，
+      // 只能刷新页面。曾在这里加过 `comments 为空 && 无 URL 源` 的早退，
+      // 表现就是「手动选集 + 手动加 URL 源，仍提示刷新」。
+      // 一直扣着是安全的：视频本身就是暂停的，播放器不会等这段弹幕。
       // 先睡一下再取 loading，避免 loading 已 resolve 时空转
       await new Promise<void>((resolve) => setTimeout(resolve, 100))
       const loading = state.loading
@@ -1045,14 +1145,20 @@ async function waitForLoading() {
     }
 
     // 普通页面只有有限等待，超时就不等了
-    if (Date.now() >= deadline) return
+    if (Date.now() >= deadline) {
+      traceEvent('waitForLoading 退出：普通页面超时')
+      return
+    }
 
     // 判据是「有匹配在路上」或者「马上会有一次匹配」：
     // loading 在跑就等它，只有 expecting 就先小睡再取一次。
     // 两者都没有 = 这次页面压根不打算匹配，立刻放行。
     const loading = state.loading
     if (!loading) {
-      if (!state.expecting) return
+      if (!state.expecting) {
+        traceEvent('waitForLoading 退出：无 loading 也无 expecting')
+        return
+      }
       await new Promise<void>((resolve) => setTimeout(resolve, 50))
       continue
     }
@@ -1060,8 +1166,18 @@ async function waitForLoading() {
       () => undefined,
       () => undefined
     )
-    // 这一轮匹配已经结束却没有结果（没匹配上），继续等也没意义
-    if (!state.comments) return
+    // 这一轮匹配已经结束却没有候选：
+    // - `null` = 没匹配上，继续等也没意义；
+    // - `[]` = 弹弹play 明确说这集没有弹幕。若此时 URL 来源还在拉，值得
+    //   再等一轮（它可能马上就绪）；完全没有 URL 来源时才放弃等待。
+    if (!state.comments) {
+      traceEvent('waitForLoading 退出：匹配结束但无 comments')
+      return
+    }
+    if (state.comments.length === 0 && !hasAnyUrlSource()) {
+      traceEvent('waitForLoading 退出：该集无弹幕且无 URL 源')
+      return
+    }
   }
 }
 
@@ -1421,6 +1537,15 @@ export function installHook() {
     } catch (error) {
       console.warn('[danmaku-enhance] 无法拦截页面 fetch', error)
     }
+  }
+
+  // 诊断入口：页面控制台执行 window.__kdDebug() 可看到完整状态快照。
+  // 挂到页面 window 上（而不只是油猴沙箱），方便直接按 F12 查看。
+  try {
+    ;(page as any).__kdDebug = debugSnapshot
+    if (page !== window) (window as any).__kdDebug = debugSnapshot
+  } catch (error) {
+    console.warn('[danmaku-enhance] 挂载诊断入口失败', error)
   }
 
   console.info('[danmaku-enhance] 已安装弹幕拦截', {
