@@ -1256,6 +1256,14 @@ export function mountPanel(info: BiliPageInfo): PanelHandle {
   let busy = false
   /** 这一轮匹配已经有结论了（成功或失败都算），白名单的暂停监视靠它收手 */
   let matchSettled = false
+  /**
+   * 番剧与集数都匹配成功，但这一集弹弹play 没有弹幕。
+   *
+   * 不能塞进 `notice`：那个字段渲染成**主标题**，会把「番名 · 集名」
+   * 顶掉，用户看到的是「该集没有弹幕」，看不出匹配其实成功了。
+   * 这里是副标题的一行补充说明。
+   */
+  let emptyEpisodeHint = ''
   /** 当前集弹弹play无弹幕时，已经用 URL 来源接管到的条数 */
   let urlFallbackCount = 0
   /** URL 来源加入时播放器已经请求过弹幕，需要提醒刷新当前分段 */
@@ -1313,6 +1321,7 @@ export function mountPanel(info: BiliPageInfo): PanelHandle {
     episodeOptions = []
     tried = []
     notice = nextNotice
+    emptyEpisodeHint = ''
     urlFallbackCount = 0
     urlFallbackNeedsRefresh = false
     urlSourceNotice = ''
@@ -1461,6 +1470,15 @@ export function mountPanel(info: BiliPageInfo): PanelHandle {
         // 显示旧数据，看起来像重选没生效（toast 却说了切换集数，自相矛盾）。
         statusSub.textContent = withTotal('本段为切换集数前的弹幕，刷新后生效')
         pageReloadBtn.hidden = false
+      } else if (emptyEpisodeHint) {
+        // 匹配成功但这一集弹弹play 没有弹幕：主标题已经是「番名 · 集名」，
+        // 这里补一句原因，并带上 URL 来源（若有）的条数，让用户知道
+        // 第三方弹幕其实拿到了，只是不来自弹弹play。
+        const urlTotal = getTotalCount()
+        statusSub.textContent = urlTotal
+          ? `${emptyEpisodeHint}，已使用 URL 来源的 ${urlTotal} 条`
+          : emptyEpisodeHint
+        pageReloadBtn.hidden = true
       } else if (reloadHint) {
         // reloadDanmaku 已确认播放器没有重发当前分段。这个结果优先于
         // requests===0 的兜底提示，否则播放中重新匹配后会一直显示「等待
@@ -1726,6 +1744,9 @@ export function mountPanel(info: BiliPageInfo): PanelHandle {
     notice = matchedAnime()
       ? `${anime!.name} · ${episode!.name}`
       : `URL来源已加载 ${total} 条弹幕`
+    // URL 来源已接管这一集：不再需要「该集没有弹幕」的说明，
+    // 副标题交给 urlFallbackCount 那个分支写「共 N 条，当前分段已注入 M 条」。
+    emptyEpisodeHint = ''
     releaseHold()
     clearToast('hold')
     clearToast('hold-tip')
@@ -1937,7 +1958,14 @@ export function mountPanel(info: BiliPageInfo): PanelHandle {
         await urlRestorePromise
         if (!isCurrentMatch(seq)) return
         busy = false
-        notice = '该集没有弹幕'
+        // 番剧和集数都匹配成功了，主标题要保留「番名 · 集名」。
+        // 进入这个函数时 notice 被设成「加载「第N话」弹幕…」，那只是
+        // 进度提示；这里必须清掉，否则它会一直霸占主标题（notice 的
+        // 渲染优先级高于 anime/episode 分支），用户看到的就是
+        // 「加载…」而不是匹配结果。
+        notice = ''
+        // 「没有弹幕」是这一集的情况，写在副标题里。
+        emptyEpisodeHint = '该集没有弹幕'
         setComments([])
         // URL 来源可能已经先加载完成；有数据就把它当作本集的弹幕结果，
         // 否则才保留「该集没有弹幕」的白名单暂停结论。
@@ -1951,6 +1979,8 @@ export function mountPanel(info: BiliPageInfo): PanelHandle {
       await urlRestorePromise
       if (!isCurrentMatch(seq)) return
       notice = ''
+      // 这一集有弹弹play 弹幕：清掉上一集可能留下的「该集没有弹幕」
+      emptyEpisodeHint = ''
       busy = false
       setComments(comments)
       // 候选换了一版（重选集数/换番剧都会走 setComments）：已注入的分段
